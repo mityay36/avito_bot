@@ -45,7 +45,7 @@ class AvitoScraper:
             'locationId': '637640',  # Москва
             'categoryId': '24',  # Квартиры
             'params[549]': '1059',  # Аренда
-            'params[]': ['1', '2'],  # 1-2 комнатные
+            'params': '1,2',  # 1-2 комнатные (исправлено)
             'priceMax': '75000',
             'areaMin': '35',
             'sort': 'date',
