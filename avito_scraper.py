@@ -36,7 +36,6 @@ class AdvancedAvitoScraper:
             # Формат: {'host': 'ip', 'port': 'port', 'username': 'user', 'password': 'pass'}
             {'host': PROXY_HOST, 'port': PROXY_PORT, 'username': PROXY_USER, 'password': PROXY_PASS},
         ]
-v
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
