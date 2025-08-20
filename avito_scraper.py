@@ -12,6 +12,15 @@ class AvitoScraper:
     def __init__(self):
         self.headers = HEADERS
         self.base_url = "https://www.avito.ru"
+        self.proxies = [
+            {"http": "http://64.110.82.7:8080","https": "https://64.110.82.7:8080"},
+            {"http": "http://154.16.146.44:80", "https": "https://154.16.146.44:80"},
+            {"http": "http://23.247.136.254:80", "https": "https://23.247.136.254:80"},
+            {"http": "http://209.97.150.167:8080", "https": "https://209.97.150.167:8080"},
+            {"http": "http://43.153.28.68:3128", "https": "https://43.153.28.68:3128"},
+            {"http": "http://198.199.86.11:8080", "https": "https://198.199.86.11:8080"},
+            {"http": "http://185.17.153.178:8080", "https": "https://185.17.153.178:8080"},
+        ]
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
@@ -25,7 +34,7 @@ class AvitoScraper:
         self.last_request_time = 0
         self.session = requests.Session()
 
-    print(f"[Scraper] Инициализация с критериями: {FILTER_CRITERIA}")
+        print(f"[Scraper] Инициализация с критериями: {FILTER_CRITERIA}")
 
     def get_apartments(self):
         """Получение списка квартир с Avito через API"""
@@ -34,10 +43,15 @@ class AvitoScraper:
             api_url = self.convert_search_url_to_api()
             print(f"[Scraper] API запрос: {api_url}")
 
-            self.smart_delay()
+            # self.smart_delay()
             self.rotate_user_agent()
 
-            response = requests.get(api_url, headers=self.headers)
+            # proxy = self.get_working_proxy()
+            # if not proxy:
+            #     print("[Proxy] Рабочих прокси не найдено")
+            #     return []
+
+            response = requests.get(api_url, headers=self.headers, timeout=30)
             print(f"[Scraper] Статус ответа: {response.status_code}")
             response.raise_for_status()
 
@@ -87,6 +101,26 @@ class AvitoScraper:
         except Exception as e:
             print(f"[Scraper] ❌ Неизвестная ошибка при работе с API: {e}")
             return self.get_apartments_html_fallback()
+
+    def get_working_proxy(self):
+        """Найти рабочий прокси"""
+        for proxy in self.proxies:
+            try:
+                proxy_formats = [
+                    {'http': f'http://{proxy}', 'https': f'http://{proxy}'},  # HTTP
+                    {'http': f'socks5://{proxy}', 'https': f'socks5://{proxy}'},  # SOCKS5
+                    {'http': f'socks4://{proxy}', 'https': f'socks4://{proxy}'}  # SOCKS4
+                ]
+                for i, proxy_dict in enumerate(proxy_formats):
+                    response = requests.get('http://httpbin.org/ip',
+                                            proxies=proxy_dict,
+                                            timeout=10)
+                    if response.status_code == 200:
+                        print(f"[Proxy] Рабочий прокси найден: {proxy}")
+                        return proxy
+            except:
+                continue
+        return None
 
     def convert_search_url_to_api(self):
         """Конвертация URL поиска в API запрос"""
@@ -576,46 +610,39 @@ class AvitoScraper:
 
     def smart_delay(self):
         """Умная задержка с увеличением при ошибках"""
-        current_time = time.time()
+        base_delay = 60 + (self.request_count * 30)  # 1 минута + 30 сек за каждый запрос
 
-        # Базовая задержка
-        base_delay = 15 + (self.request_count * 2)  # Увеличиваем задержку с каждым запросом
+        # Случайная задержка от 10 до 20 секунд
+        random_delay = random.uniform(10, 20)
 
-        # Если прошлый запрос был недавно, ждем дольше
-        time_since_last = current_time - self.last_request_time
-        if time_since_last < base_delay:
-            additional_delay = base_delay - time_since_last
-            print(f"[Scraper] ⏳ Дополнительная задержка: {additional_delay:.1f} сек")
-            time.sleep(additional_delay)
+        total_delay = base_delay + random_delay
 
-        # Случайная задержка для имитации человека
-        random_delay = random.uniform(5, 15)
-        print(f"[Scraper] ⏰ Случайная задержка: {random_delay:.1f} сек")
-        time.sleep(random_delay)
+        print(f"[Scraper] ⏰ Очень долгая задержка: {total_delay / 60:.1f} минут")
+        time.sleep(total_delay)
 
         self.last_request_time = time.time()
         self.request_count += 1
 
     def rotate_user_agent(self):
-        """Ротация User-Agent и других заголовков"""
-        self.headers['User-Agent'] = random.choice(self.user_agents)
+            """Ротация User-Agent и других заголовков"""
+            self.headers['User-Agent'] = random.choice(self.user_agents)
 
-        # ✅ Дополнительные заголовки для маскировки
-        self.headers.update({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': random.choice([
-                'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-                'ru-RU,ru;q=0.9,en;q=0.8',
-                'ru,en-US;q=0.7,en;q=0.3'
-            ]),
-            'Accept-Encoding': 'gzip, deflate, br',
-            'DNT': '1',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Cache-Control': 'max-age=0',
-        })
+            # ✅ Дополнительные заголовки для маскировки
+            self.headers.update({
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': random.choice([
+                    'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
+                    'ru-RU,ru;q=0.9,en;q=0.8',
+                    'ru,en-US;q=0.7,en;q=0.3'
+                ]),
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Cache-Control': 'max-age=0',
+            })
 
-        print(f"[Scraper] 🔄 User-Agent: {self.headers['User-Agent'][:50]}...")
+            print(f"[Scraper] 🔄 User-Agent: {self.headers['User-Agent'][:50]}...")
