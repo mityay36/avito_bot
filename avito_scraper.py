@@ -1,534 +1,324 @@
 import requests
-from bs4 import BeautifulSoup
 import time
 import random
 import re
-import json
-from datetime import datetime, timedelta
-from config import HEADERS, AVITO_SEARCH_URL, TARGET_METRO_STATIONS, FILTER_CRITERIA
+import pickle
+import os
+from datetime import datetime
+
+from bs4 import BeautifulSoup
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.common.exceptions import TimeoutException
+import undetected_chromedriver as uc
+from config import (
+    HEADERS, AVITO_SEARCH_URL, TARGET_METRO_STATIONS,
+    FILTER_CRITERIA, PROXY_HOST, PROXY_PORT, PROXY_USER, PROXY_PASS
+)
 
 
-class AvitoScraper:
+
+class AdvancedAvitoScraper:
     def __init__(self):
-        self.headers = HEADERS
+        self.headers = HEADERS.copy()
         self.base_url = "https://www.avito.ru"
+        self.session = requests.Session()
+        self.driver = None
+        self.cookies_file = "avito_cookies.pkl"
+        self.proxy_index = 0
+        self.blocked_proxies = set()
+        self.ip_blocked = False
+        self.last_block_time = 0
+        self.block_count = 0
+
+        # Прокси список (добавьте рабочие прокси)
         self.proxies = [
-            {"http": "http://64.110.82.7:8080","https": "https://64.110.82.7:8080"},
-            {"http": "http://154.16.146.44:80", "https": "https://154.16.146.44:80"},
-            {"http": "http://23.247.136.254:80", "https": "https://23.247.136.254:80"},
-            {"http": "http://209.97.150.167:8080", "https": "https://209.97.150.167:8080"},
-            {"http": "http://43.153.28.68:3128", "https": "https://43.153.28.68:3128"},
-            {"http": "http://198.199.86.11:8080", "https": "https://198.199.86.11:8080"},
-            {"http": "http://185.17.153.178:8080", "https": "https://185.17.153.178:8080"},
+            # Формат: {'host': 'ip', 'port': 'port', 'username': 'user', 'password': 'pass'}
+            {'host': PROXY_HOST, 'port': PROXY_PORT, 'username': PROXY_USER, 'password': PROXY_PASS},
         ]
+v
         self.user_agents = [
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/121.0',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
             'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Edge/120.0.0.0',
         ]
 
-        self.request_count = 0
-        self.last_request_time = 0
-        self.session = requests.Session()
+        print(f"[AdvancedScraper] 🚀 Инициализация с {len(self.proxies)} прокси")
 
-        print(f"[Scraper] Инициализация с критериями: {FILTER_CRITERIA}")
-
-    def get_apartments(self):
-        """Получение списка квартир с Avito через API"""
+    def setup_driver(self, use_proxy=True):
+        """✅ Исправленная настройка драйвера с авторизованным прокси"""
         try:
-            # Используем внутренний API Avito для более стабильной работы
-            api_url = self.convert_search_url_to_api()
-            print(f"[Scraper] API запрос: {api_url}")
+            options = uc.ChromeOptions()
 
-            # self.smart_delay()
-            self.rotate_user_agent()
+            # Базовые настройки
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-blink-features=AutomationControlled')
+            options.add_argument('--disable-extensions')
 
-            # proxy = self.get_working_proxy()
-            # if not proxy:
-            #     print("[Proxy] Рабочих прокси не найдено")
-            #     return []
+            # User-Agent
+            user_agent = random.choice(self.user_agents)
+            options.add_argument(f'--user-agent={user_agent}')
 
-            response = requests.get(api_url, headers=self.headers, timeout=30)
-            print(f"[Scraper] Статус ответа: {response.status_code}")
-            response.raise_for_status()
+            # ✅ Настройка авторизованного прокси для Selenium
+            if use_proxy and self.proxies:
+                proxy = self.get_next_proxy()
+                if proxy:
+                    proxy_url = self.format_proxy_url(proxy)
+                    options.add_argument(f'--proxy-server={proxy_url}')
+                    print(f"[AdvancedScraper] 🌐 Selenium прокси: {proxy['host']}:{proxy['port']}")
+                    self.current_proxy = proxy
 
-            data = response.json()
-            print(f"[Scraper] Получен ответ, ключи: {list(data.keys())}")
+            options.add_argument('--window-size=1280,720')
 
-            apartments = []
+            # Создаем драйвер
+            self.driver = uc.Chrome(options=options)
 
-            if 'items' in data:
-                items = data['items']
-                print(f"[Scraper] Найдено объявлений в API: {len(items)}")
+            # Загружаем cookies
+            self.load_cookies()
 
-                for i, item in enumerate(items):
-                    print(f"\n[Scraper] === Обработка объявления {i + 1}/{len(items)} ===")
-                    apartment_data = self.parse_apartment_from_api(item)
+            print(f"[AdvancedScraper] ✅ Драйвер настроен с авторизованным прокси")
+            return True
 
-                    if apartment_data:
-                        print(f"[Scraper] ✅ Объявление распознано: '{apartment_data['title'][:50]}...'")
-                        print(
-                            f"[Scraper] Цена: {apartment_data['price']}, Площадь: {apartment_data.get('area', 'не указана')} м²")
-                        print(
-                            f"[Scraper] Метро: {apartment_data['metro_info']['stations'][:2] if apartment_data['metro_info']['stations'] else 'не найдено'}")
-
-                        if self.meets_criteria(apartment_data):
-                            apartments.append(apartment_data)
-                            print(f"[Scraper] 🎯 ПОДХОДИТ! Добавлено в список")
-                        else:
-                            print(f"[Scraper] ❌ Не подходит по критериям")
-                    else:
-                        print(f"[Scraper] ⚠️ Объявление не удалось распознать")
-
-            else:
-                print(f"[Scraper] ❌ Ключ 'items' не найден в ответе API")
-                print(f"[Scraper] Доступные ключи: {list(data.keys())}")
-                if 'error' in data:
-                    print(f"[Scraper] Ошибка API: {data['error']}")
-
-            print(f"\n[Scraper] 📊 Итого подходящих квартир: {len(apartments)} из {len(data.get('items', []))}")
-            return apartments
-
-        except requests.exceptions.RequestException as e:
-            print(f"[Scraper] ❌ Ошибка HTTP запроса: {e}")
-            return self.get_apartments_html_fallback()
-        except json.JSONDecodeError as e:
-            print(f"[Scraper] ❌ Ошибка парсинга JSON: {e}")
-            return self.get_apartments_html_fallback()
         except Exception as e:
-            print(f"[Scraper] ❌ Неизвестная ошибка при работе с API: {e}")
-            return self.get_apartments_html_fallback()
+            print(f"[AdvancedScraper] ❌ Ошибка настройки драйвера: {e}")
+            return False
 
-    def get_working_proxy(self):
-        """Найти рабочий прокси"""
-        for proxy in self.proxies:
+    def get_next_proxy(self):
+        """Получить следующий прокси с правильным форматом"""
+        if not self.proxies:
+            return None
+
+        available_proxies = [p for p in self.proxies
+                             if f"{p['host']}:{p['port']}" not in self.blocked_proxies]
+
+        if not available_proxies:
+            print("[AdvancedScraper] ⚠️ Все прокси заблокированы, сброс списка")
+            self.blocked_proxies.clear()
+            available_proxies = self.proxies
+
+        return random.choice(available_proxies)
+
+    def format_proxy_url(self, proxy):
+        """Форматирование прокси URL с авторизацией"""
+        if 'username' in proxy and 'password' in proxy:
+            return f"http://{proxy['username']}:{proxy['password']}@{proxy['host']}:{proxy['port']}"
+        else:
+            return f"http://{proxy['host']}:{proxy['port']}"
+
+    def load_cookies(self):
+        """Загрузка сохраненных cookies"""
+        if os.path.exists(self.cookies_file):
             try:
-                proxy_formats = [
-                    {'http': f'http://{proxy}', 'https': f'http://{proxy}'},  # HTTP
-                    {'http': f'socks5://{proxy}', 'https': f'socks5://{proxy}'},  # SOCKS5
-                    {'http': f'socks4://{proxy}', 'https': f'socks4://{proxy}'}  # SOCKS4
-                ]
-                for i, proxy_dict in enumerate(proxy_formats):
-                    response = requests.get('http://httpbin.org/ip',
-                                            proxies=proxy_dict,
-                                            timeout=10)
-                    if response.status_code == 200:
-                        print(f"[Proxy] Рабочий прокси найден: {proxy}")
-                        return proxy
-            except:
-                continue
-        return None
+                if self.driver.current_url == 'data:,':
+                    self.driver.get("https://www.avito.ru")
+                    time.sleep(2)
 
-    def convert_search_url_to_api(self):
-        """Конвертация URL поиска в API запрос"""
-        # Если задан AVITO_SEARCH_URL, используем его напрямую для тестирования
-        if AVITO_SEARCH_URL and AVITO_SEARCH_URL.strip():
-            print(f"[Scraper] Используем URL из переменной окружения: {AVITO_SEARCH_URL}")
-            return AVITO_SEARCH_URL
+                with open(self.cookies_file, 'rb') as f:
+                    cookies = pickle.load(f)
+                    for cookie in cookies:
+                        try:
+                            self.driver.add_cookie(cookie)
+                        except:
+                            continue
+                print(f"[AdvancedScraper] 🍪 Загружено {len(cookies)} cookies")
+            except Exception as e:
+                print(f"[AdvancedScraper] ⚠️ Ошибка загрузки cookies: {e}")
 
-        # Иначе формируем API URL
-        api_url = "https://www.avito.ru/web/1/main/items"
+    def save_cookies(self):
+        """Сохранение текущих cookies"""
+        if self.driver:
+            try:
+                cookies = self.driver.get_cookies()
+                with open(self.cookies_file, 'wb') as f:
+                    pickle.dump(cookies, f)
+                print(f"[AdvancedScraper] 💾 Сохранено {len(cookies)} cookies")
+            except Exception as e:
+                print(f"[AdvancedScraper] ❌ Ошибка сохранения cookies: {e}")
 
-        params = {
-            'locationId': '637640',  # Москва
-            'categoryId': '24',  # Квартиры
-            'params[549]': '1059',  # Аренда
-            'params': '1,2',
-            'priceMax': str(FILTER_CRITERIA['max_price']),
-            'areaMin': str(FILTER_CRITERIA['min_area']),
-            'sort': 'date',
-            'limit': '50',
-            'page': '1'
+    def check_blocking(self):
+        """Проверка на блокировку"""
+        if not self.driver:
+            return False
+
+        page_source = self.driver.page_source.lower()
+
+        blocking_indicators = [
+            'проверка безопасности',
+            'captcha',
+            'доступ ограничен',
+            'заблокирован',
+            'robot',
+            'bot',
+            'автоматический запрос',
+            'подозрительная активность'
+        ]
+
+        for indicator in blocking_indicators:
+            if indicator in page_source:
+                print(f"[AdvancedScraper] 🚫 Обнаружена блокировка: {indicator}")
+                return True
+
+        # Проверяем статус страницы
+        try:
+            current_url = self.driver.current_url
+            if 'blocked' in current_url or 'captcha' in current_url:
+                return True
+        except:
+            pass
+
+        return False
+
+    def handle_blocking(self):
+        """Обработка блокировки"""
+        self.ip_blocked = True
+        self.last_block_time = time.time()
+        self.block_count += 1
+
+        print(f"[AdvancedScraper] 🚫 IP заблокирован (блокировка #{self.block_count})")
+
+        # Закрываем текущий драйвер
+        if self.driver:
+            self.driver.quit()
+            self.driver = None
+
+        # Добавляем текущий прокси в заблокированные
+        if hasattr(self, 'current_proxy'):
+            proxy_string = f"{self.current_proxy['host']}:{self.current_proxy['port']}"
+            self.blocked_proxies.add(proxy_string)
+            print(f"[AdvancedScraper] ❌ Прокси {proxy_string} добавлен в черный список")
+
+        # Возвращаем информацию о блокировке для уведомления
+        return {
+            'blocked': True,
+            'block_count': self.block_count,
+            'timestamp': datetime.now(),
+            'blocked_proxies': len(self.blocked_proxies)
         }
 
-        param_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-        full_url = f"{api_url}?{param_string}"
-
-        print(f"[Scraper] Сформированный API URL: {full_url}")
-        return full_url
-
-    def parse_apartment_from_api(self, item):
-        """Парсинг квартиры из API ответа"""
+    def get_apartments(self):
+        """Главный метод получения квартир"""
         try:
-            # Проверка даты - СЕГОДНЯ И ВЧЕРА
-            if not self.is_recent_listing(item):
-                print(f"[Scraper] ⏰ Объявление пропущено по дате: {item.get('title', 'Без названия')}")
-                return None
+            # Проверяем блокировку
+            if self.ip_blocked and (time.time() - self.last_block_time) < 1800:  # 30 минут
+                remaining = 1800 - (time.time() - self.last_block_time)
+                print(f"[AdvancedScraper] ⏰ Ждем снятия блокировки: {remaining / 60:.1f} мин")
+                return []
 
-            apartment_id = item.get('id', '')
-            title = item.get('title', 'Без названия')
+            # Настраиваем драйвер
+            if not self.driver or self.ip_blocked:
+                if not self.setup_driver():
+                    print("[AdvancedScraper] ❌ Не удалось настроить драйвер, используем fallback")
+                    return self.get_apartments_fallback()
+                self.ip_blocked = False
 
-            # Извлечение цены
-            price_info = item.get('priceDetailing', {})
-            price_value = price_info.get('value', 0)
-            price_text = f"{price_value:,} ₽" if price_value else "Цена не указана"
-
-            # Извлечение местоположения и метро
-            location_info = item.get('location', {})
-            location = location_info.get('name', 'Местоположение не указано')
-
-            # Извлечение информации о метро
-            metro_info = self.extract_metro_from_api_item(item)
-
-            # Формирование URL
-            url = f"https://www.avito.ru{item.get('urlPath', '')}"
-
-            # Извлечение изображения
-            images = item.get('images', [])
-            image_url = images[0].get('636x476') if images else ""
-
-            # Извлечение описания и параметров
-            description = item.get('description', '')
-            rooms, area = self.extract_apartment_params_from_api(item)
-
-            # Определяем возраст объявления для отображения
-            listing_age = self.get_listing_age(item)
-
-            return {
-                'id': apartment_id,
-                'title': title,
-                'price': price_text,
-                'price_num': price_value,
-                'location': location,
-                'metro_info': metro_info,
-                'url': url,
-                'image_url': image_url,
-                'description': description,
-                'rooms': rooms,
-                'area': area,
-                'date_published': item.get('sortTimeStamp', 0),
-                'listing_age': listing_age
-            }
-
-        except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при парсинге объявления из API: {e}")
-            return None
-
-    def is_recent_listing(self, item):
-        """Проверка, что объявление опубликовано сегодня или вчера"""
-        try:
-            timestamp = item.get('sortTimeStamp', 0)
-            if timestamp:
-                listing_date = datetime.fromtimestamp(timestamp)
-                today = datetime.now().date()
-                yesterday = today - timedelta(days=1)
-
-                listing_day = listing_date.date()
-                is_recent = listing_day == today or listing_day == yesterday
-                print(f"[Scraper] Дата объявления: {listing_day}, сегодня: {today}, подходит: {is_recent}")
-                return is_recent
-            print(f"[Scraper] ⚠️ Временная метка отсутствует")
-            return False
-        except Exception as e:
-            print(f"[Scraper] ❌ Ошибка проверки даты: {e}")
-            return False
-
-    def get_listing_age(self, item):
-        """Определение возраста объявления для отображения"""
-        try:
-            timestamp = item.get('sortTimeStamp', 0)
-            if timestamp:
-                listing_date = datetime.fromtimestamp(timestamp)
-                today = datetime.now().date()
-
-                if listing_date.date() == today:
-                    hours_ago = (datetime.now() - listing_date).total_seconds() / 3600
-                    if hours_ago < 1:
-                        return "📅 Только что"
-                    elif hours_ago < 24:
-                        return f"📅 {int(hours_ago)} ч назад"
-                    else:
-                        return "📅 Сегодня"
-                else:
-                    return "📅 Вчера"
-            return "📅 Недавно"
-        except:
-            return "📅 Недавно"
-
-    def extract_metro_from_api_item(self, item):
-        """Извлечение информации о метро из API"""
-        metro_info = {'stations': [], 'time': None}
-
-        try:
-            # Проверяем в разных местах API ответа
-            geo = item.get('geo', {})
-            references = geo.get('references', [])
-
-            for ref in references:
-                ref_text = str(ref).lower()
-
-                # Поиск времени до метро
-                time_match = re.search(r'(\d+)\s*мин', ref_text)
-                if time_match:
-                    metro_info['time'] = int(time_match.group(1))
-
-                # Поиск станций метро
-                for station in TARGET_METRO_STATIONS:
-                    if station in ref_text:
-                        metro_info['stations'].append(station)
-
-            # Дополнительная проверка в описании и заголовке
-            full_text = (item.get('title', '') + ' ' + item.get('description', '')).lower()
-            for station in TARGET_METRO_STATIONS:
-                if station in full_text and station not in metro_info['stations']:
-                    metro_info['stations'].append(station)
-
-        except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при извлечении информации о метро: {e}")
-
-        return metro_info
-
-    def extract_apartment_params_from_api(self, item):
-        """Извлечение параметров квартиры из API"""
-        rooms = None
-        area = None
-
-        try:
-            params = item.get('params', {})
-
-            # Поиск количества комнат
-            if 'rooms' in params:
-                rooms = int(params['rooms'])
-            else:
-                title = item.get('title', '').lower()
-                room_match = re.search(r'(\d+)-к', title)
-                if room_match:
-                    rooms = int(room_match.group(1))
-
-            # Поиск площади
-            if 'area' in params:
-                area = float(params['area'])
-            else:
-                full_text = item.get('title', '') + ' ' + item.get('description', '')
-                area_match = re.search(r'(\d+(?:[.,]\d+)?)\s*м²', full_text)
-                if area_match:
-                    area = float(area_match.group(1).replace(',', '.'))
-
-            print(f"[Scraper] Параметры: комнат={rooms}, площадь={area}")
-
-        except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при извлечении параметров: {e}")
-
-        return rooms, area
-
-    def get_apartments_html_fallback(self):
-        """Улучшенный HTML парсинг с защитой от блокировки"""
-        print(f"[Scraper] 🌐 Запуск HTML парсинга...")
-
-        try:
+            # Переходим на страницу
             url = AVITO_SEARCH_URL if AVITO_SEARCH_URL else "https://www.avito.ru/moskva/kvartiry/sdam"
-            print(f"[Scraper] 📡 Запрос к: {url[:100]}...")
+            print(f"[AdvancedScraper] 🌐 Переход на: {url[:80]}...")
 
-            # ✅ Используем сессию с настройками
-            response = self.session.get(url, headers=self.headers, timeout=30)
+            self.driver.get(url)
+            time.sleep(random.uniform(3, 5))
 
-            print(f"[Scraper] 📊 Статус: {response.status_code}, Размер: {len(response.content)} байт")
+            # Проверяем на блокировку
+            if self.check_blocking():
+                return [self.handle_blocking()]
 
-            # ✅ Проверка на блокировку
-            if response.status_code == 429:
-                print(f"[Scraper] 🚫 Получена блокировка 429, увеличиваем задержки...")
-                self.request_count += 5  # Увеличиваем счетчик для больших задержек
-                time.sleep(60)  # Ждем минуту
-                return []
+            # ✅ Упрощенное ожидание загрузки
+            try:
+                WebDriverWait(self.driver, 10).until(
+                    lambda driver: len(driver.find_elements(By.CSS_SELECTOR, '[data-marker="item"]')) > 0
+                )
+            except TimeoutException:
+                print("[AdvancedScraper] ⚠️ Таймаут, пробуем парсить что есть")
 
-            if response.status_code == 403:
-                print(f"[Scraper] 🚫 Доступ запрещен (403), возможно IP заблокирован")
-                return []
+            # Парсим
+            apartments = self.parse_apartments()
+            self.save_cookies()
 
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.content, 'html.parser')
-
-            if 'captcha' in response.text.lower() or 'проверка' in response.text.lower():
-                print(f"[Scraper] 🔒 Обнаружена капча, прекращаем парсинг")
-                return []
-
-            apartments = []
-            apartment_cards = soup.find_all('div', {'data-marker': 'item'})
-            print(f"[Scraper] 🏠 Найдено HTML карточек: {len(apartment_cards)}")
-
-            if len(apartment_cards) == 0:
-                print(f"[Scraper] ⚠️ Карточки не найдены, возможно изменилась структура или блокировка")
-                # Сохраним HTML для отладки
-                with open('debug_response.html', 'w', encoding='utf-8') as f:
-                    f.write(response.text[:5000])
-                print(f"[Scraper] 💾 Первые 5000 символов сохранены в debug_response.html")
-
-            for i, card in enumerate(apartment_cards[:20], 1):  # Ограничиваем до 20 для экономии времени
-                print(f"[Scraper] 🔍 Обработка карточки {i}/{min(len(apartment_cards), 20)}")
-                apartment_data = self.parse_apartment_card_updated(card)
-
-                if apartment_data:
-                    if self.meets_criteria(apartment_data):
-                        apartments.append(apartment_data)
-                        print(f"[Scraper] ✅ Квартира добавлена: {apartment_data['title'][:50]}...")
-                    else:
-                        print(f"[Scraper] ❌ Не подходит по критериям")
-
-                time.sleep(random.uniform(0.5, 1.5))
-
-            print(f"[Scraper] 📈 Итого найдено подходящих квартир: {len(apartments)}")
+            print(f"[AdvancedScraper] ✅ Найдено квартир: {len(apartments)}")
             return apartments
 
-        except requests.exceptions.RequestException as e:
-            print(f"[Scraper] ❌ Ошибка запроса: {e}")
-            if '429' in str(e):
-                print(f"[Scraper] 🚫 Слишком много запросов, увеличиваем задержки...")
-                self.request_count += 10
-                time.sleep(120)  # Ждем 2 минуты
-            return []
         except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при HTML парсинге: {e}")
-            return []
+            print(f"[AdvancedScraper] ❌ Ошибка: {e}")
+            return self.get_apartments_fallback()
 
-    def parse_apartment_card_updated(self, card):
-        """Обновленный парсинг HTML карточки с улучшенными селекторами"""
-        try:
-            # Заголовок - пробуем разные селекторы
-            title_elem = (card.find('a', {'data-marker': 'item-title'}) or
-                          card.find('h3') or
-                          card.find('a', class_=re.compile('title')))
-            title = title_elem.text.strip() if title_elem else "Без названия"
-
-            # Цена - улучшенные селекторы
-            price_elem = (card.find('span', {'data-marker': 'item-price'}) or
-                          card.find('meta', {'itemprop': 'price'}) or
-                          card.find('span', class_=re.compile('price')))
-
-            if price_elem:
-                if price_elem.name == 'meta':
-                    price_value = int(price_elem.get('content', 0))
-                    price = f"{price_value:,} ₽"
-                else:
-                    price = price_elem.text.strip()
-                    price_value = self.extract_price_number(price)
-            else:
-                price = "Цена не указана"
-                price_value = 0
-
-            # Местоположение
-            address_elem = (card.find('div', {'data-marker': 'item-address'}) or
-                            card.find('span', class_=re.compile('address')))
-            location = address_elem.text.strip() if address_elem else "Местоположение не указано"
-
-            # Информация о метро - улучшенный поиск
-            metro_info = self.extract_metro_from_html(card)
-
-            # Ссылка
-            url = ""
-            if title_elem and title_elem.get('href'):
-                href = title_elem['href']
-                url = href if href.startswith('http') else self.base_url + href
-
-            # Изображение
-            img_elem = (card.find('img', {'data-marker': 'item-photo'}) or
-                        card.find('img'))
-            image_url = img_elem.get('src', '') if img_elem else ""
-
-            # Описание - пробуем найти в разных местах
-            desc_elem = (card.find('div', {'data-marker': 'item-specific-params'}) or
-                         card.find('p', class_=re.compile('description')) or
-                         card.find('div', class_=re.compile('description')))
-            description = desc_elem.text.strip() if desc_elem else ""
-
-            # Параметры квартиры
-            rooms, area = self.extract_apartment_params(title, description)
-
-            return {
-                'title': title,
-                'price': price,
-                'price_num': price_value,
-                'location': location,
-                'metro_info': metro_info,
-                'url': url,
-                'image_url': image_url,
-                'description': description,
-                'rooms': rooms,
-                'area': area,
-                'listing_age': "📅 Недавно"
-            }
-
-        except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при парсинге карточки: {e}")
-            return None
-
-    def extract_metro_from_html(self, card):
-        """Улучшенное извлечение информации о метро из HTML"""
-        metro_info = {'stations': [], 'time': None}
+    def parse_apartments(self):
+        """Парсинг квартир с помощью Selenium"""
+        apartments = []
 
         try:
-            # Получаем весь текст карточки
-            full_text = card.get_text().lower()
+            # Получаем все карточки объявлений
+            apartment_elements = self.driver.find_elements(By.CSS_SELECTOR, '[data-marker="item"]')
+            print(f"[AdvancedScraper] 🏠 Найдено элементов: {len(apartment_elements)}")
 
-            # Поиск времени до метро с разными вариантами
-            time_patterns = [
-                r'(\d+)\s*мин(?:ут)?(?:\s*до\s*м(?:етро|\.)?)',
-                r'(\d+)\s*мин(?:ут)?(?:\s*пешком)',
-                r'(\d+)\s*мин(?:ут)?(?:\s*м\.)',
-                r'(\d+)\s*м\.',
-            ]
+            for i, element in enumerate(apartment_elements[:15]):  # Ограничиваем количество
+                try:
+                    print(f"[AdvancedScraper] 🔍 Обработка элемента {i + 1}")
 
-            for pattern in time_patterns:
-                matches = re.findall(pattern, full_text)
-                if matches:
-                    metro_info['time'] = min(int(t) for t in matches)
-                    print(f"[Scraper] ⏰ Найдено время до метро: {metro_info['time']} мин")
-                    break
+                    # Заголовок
+                    title_elem = element.find_element(By.CSS_SELECTOR, '[data-marker="item-title"]')
+                    title = title_elem.text.strip() if title_elem else "Без названия"
 
-            # Поиск станций метро с вариациями
-            found_stations = []
-            for station in TARGET_METRO_STATIONS:
-                patterns = [
-                    rf'\b{re.escape(station)}\b',
-                    rf'\bм\.\s*{re.escape(station)}\b',
-                    rf'\bметро\s+{re.escape(station)}\b',
-                    rf'\b{re.escape(station)}\s+метро\b',
-                ]
+                    # Ссылка
+                    url = title_elem.get_attribute('href') if title_elem else ""
 
-                for pattern in patterns:
-                    if re.search(pattern, full_text, re.IGNORECASE):
-                        if station not in found_stations:
-                            found_stations.append(station)
-                            print(f"[Scraper] 🎯 Найдена станция: {station}")
-                        break
+                    # Цена
+                    try:
+                        price_elem = element.find_element(By.CSS_SELECTOR, '[data-marker="item-price"]')
+                        price = price_elem.text.strip()
+                        price_num = self.extract_price_number(price)
+                    except:
+                        price = "Цена не указана"
+                        price_num = 0
 
-            metro_info['stations'] = found_stations
+                    # Адрес
+                    try:
+                        address_elem = element.find_element(By.CSS_SELECTOR, '[data-marker="item-address"]')
+                        location = address_elem.text.strip()
+                    except:
+                        location = "Адрес не указан"
+
+                    # Описание
+                    try:
+                        desc_elem = element.find_element(By.CSS_SELECTOR, '[data-marker="item-specific-params"]')
+                        description = desc_elem.text.strip()
+                    except:
+                        description = ""
+
+                    # Извлекаем параметры
+                    rooms, area = self.extract_apartment_params(title, description)
+                    metro_info = self.extract_metro_info(element.text)
+
+                    apartment_data = {
+                        'title': title,
+                        'price': price,
+                        'price_num': price_num,
+                        'location': location,
+                        'metro_info': metro_info,
+                        'url': url,
+                        'description': description,
+                        'rooms': rooms,
+                        'area': area,
+                        'listing_age': "📅 Недавно"
+                    }
+
+                    # Проверяем критерии
+                    if self.meets_criteria(apartment_data):
+                        apartments.append(apartment_data)
+                        print(f"[AdvancedScraper] ✅ Добавлено: {title[:50]}...")
+
+                    # Небольшая задержка между элементами
+                    time.sleep(random.uniform(0.3, 0.8))
+
+                except Exception as e:
+                    print(f"[AdvancedScraper] ⚠️ Ошибка обработки элемента {i + 1}: {e}")
+                    continue
 
         except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при извлечении метро: {e}")
+            print(f"[AdvancedScraper] ❌ Ошибка парсинга: {e}")
 
-        return metro_info
-
-    def extract_apartment_params(self, title, description):
-        """Извлечение количества комнат и площади"""
-        rooms = None
-        area = None
-
-        room_patterns = [r'(\d+)-к', r'(\d+)\s*комн', r'(\d+)-комн']
-
-        for pattern in room_patterns:
-            match = re.search(pattern, title.lower())
-            if match:
-                rooms = int(match.group(1))
-                break
-
-        area_patterns = [
-            r'(\d+(?:[.,]\d+)?)\s*м²',
-            r'(\d+(?:[.,]\d+)?)\s*кв\.?м',
-            r'площадь[:\s]+(\d+(?:[.,]\d+)?)'
-        ]
-
-        full_text = title + ' ' + description
-        for pattern in area_patterns:
-            match = re.search(pattern, full_text.lower())
-            if match:
-                area = float(match.group(1).replace(',', '.'))
-                break
-
-        return rooms, area
+        return apartments
 
     def extract_price_number(self, price_text):
         """Извлечение числового значения цены"""
@@ -538,111 +328,176 @@ class AvitoScraper:
                 return int(''.join(numbers))
         except:
             pass
-        return None
+        return 0
+
+    def extract_apartment_params(self, title, description):
+        """Извлечение параметров квартиры"""
+        rooms = None
+        area = None
+
+        # Комнаты
+        if 'студия' in title.lower():
+            rooms = 0
+        else:
+            room_match = re.search(r'(\d+)-к', title.lower())
+            if room_match:
+                rooms = int(room_match.group(1))
+
+        # Площадь
+        area_match = re.search(r'(\d+(?:[.,]\d+)?)\s*м²', (title + ' ' + description))
+        if area_match:
+            area = float(area_match.group(1).replace(',', '.'))
+
+        return rooms, area
+
+    def extract_metro_info(self, text):
+        """Извлечение информации о метро"""
+        metro_info = {'stations': [], 'time': None}
+        text_lower = text.lower()
+
+        # Время до метро
+        time_match = re.search(r'(\d+)\s*мин', text_lower)
+        if time_match:
+            metro_info['time'] = int(time_match.group(1))
+
+        # Станции метро
+        for station in TARGET_METRO_STATIONS:
+            if station in text_lower:
+                metro_info['stations'].append(station)
+
+        return metro_info
 
     def meets_criteria(self, apartment_data):
-        """Проверка соответствия критериям с подробным логированием"""
+        """Проверка критериев"""
         try:
-            print(f"[Scraper] 🔍 Проверка: {apartment_data['title'][:50]}...")
-
-            # Проверка цены
+            # Цена
             if apartment_data.get('price_num') and apartment_data['price_num'] > FILTER_CRITERIA['max_price']:
-                print(f"[Scraper] ❌ Превышена цена: {apartment_data['price']} > {FILTER_CRITERIA['max_price']}")
                 return False
 
-            # Проверка площади
+            # Площадь
             if apartment_data.get('area') and apartment_data['area'] < FILTER_CRITERIA['min_area']:
-                print(f"[Scraper] ❌ Мало площади: {apartment_data['area']} < {FILTER_CRITERIA['min_area']}")
                 return False
 
-            # Проверка комнат
+            # Комнаты
             if apartment_data.get('rooms') and apartment_data['rooms'] not in FILTER_CRITERIA['rooms']:
-                print(
-                    f"[Scraper] ❌ Неподходящее количество комнат: {apartment_data['rooms']} не в {FILTER_CRITERIA['rooms']}")
                 return False
 
-            # Проверка времени до метро
+            # Время до метро
             metro_time = apartment_data['metro_info'].get('time')
             if metro_time and metro_time > FILTER_CRITERIA['max_metro_time']:
-                print(f"[Scraper] ❌ Далеко до метро: {metro_time} мин > {FILTER_CRITERIA['max_metro_time']}")
                 return False
 
-            # Проверка станций метро
+            # Станции метро
             metro_stations = apartment_data['metro_info'].get('stations', [])
-
             if metro_stations:
-                matches = [s for s in metro_stations if s in TARGET_METRO_STATIONS]
-                if matches:
-                    print(f"[Scraper] ✅ Подходящие станции: {matches}")
-                    print(f"[Scraper] ✅ ВСЕ КРИТЕРИИ ПРОЙДЕНЫ!")
-                    return True
-                else:
-                    print(f"[Scraper] ❌ Неподходящие станции: {metro_stations}")
-                    return False
-            else:
-                # Ищем в тексте
-                full_text = (apartment_data.get('title', '') + ' ' +
-                             apartment_data.get('description', '') + ' ' +
-                             apartment_data.get('location', '')).lower()
+                return any(station in TARGET_METRO_STATIONS for station in metro_stations)
 
-                found_stations = []
-                for station in TARGET_METRO_STATIONS:
-                    if station in full_text:
-                        found_stations.append(station)
+            # Поиск в тексте
+            full_text = (apartment_data.get('title', '') + ' ' +
+                         apartment_data.get('description', '') + ' ' +
+                         apartment_data.get('location', '')).lower()
 
-                if found_stations:
-                    print(f"[Scraper] ✅ Станции найдены в тексте: {found_stations}")
-                    print(f"[Scraper] ✅ ВСЕ КРИТЕРИИ ПРОЙДЕНЫ!")
-                    return True
-                else:
-                    print(f"[Scraper] ❌ Станции метро не найдены")
-                    return False
+            return any(station in full_text for station in TARGET_METRO_STATIONS)
 
         except Exception as e:
-            print(f"[Scraper] ❌ Ошибка при проверке критериев: {e}")
+            print(f"[AdvancedScraper] ❌ Ошибка проверки критериев: {e}")
             return False
 
-    def add_random_delay(self):
-        """Случайная задержка между запросами"""
-        delay = random.uniform(5, 12)
-        print(f"[Scraper] ⏳ Задержка {delay:.1f} секунд...")
-        time.sleep(delay)
+    def cleanup(self):
+        """Очистка ресурсов"""
+        if self.driver:
+            self.save_cookies()
+            self.driver.quit()
+            print("[AdvancedScraper] 🧹 Ресурсы очищены")
 
-    def smart_delay(self):
-        """Умная задержка с увеличением при ошибках"""
-        base_delay = 60 + (self.request_count * 30)  # 1 минута + 30 сек за каждый запрос
+    def get_apartments_fallback(self):
+        """Fallback на requests с авторизованным прокси"""
+        print("[AdvancedScraper] 🔄 Fallback на requests с авторизацией...")
 
-        # Случайная задержка от 10 до 20 секунд
-        random_delay = random.uniform(10, 20)
+        try:
+            url = AVITO_SEARCH_URL if AVITO_SEARCH_URL else "https://www.avito.ru/moskva/kvartiry/sdam"
 
-        total_delay = base_delay + random_delay
+            # ✅ Настройка авторизованного прокси для requests
+            proxies_dict = None
+            if self.proxies:
+                proxy = self.get_next_proxy()
+                if proxy:
+                    proxy_url = self.format_proxy_url(proxy)
+                    proxies_dict = {
+                        'http': proxy_url,
+                        'https': proxy_url
+                    }
+                    print(
+                        f"[AdvancedScraper] 🌐 Requests прокси: {proxy['username']}:***@{proxy['host']}:{proxy['port']}")
 
-        print(f"[Scraper] ⏰ Очень долгая задержка: {total_delay / 60:.1f} минут")
-        time.sleep(total_delay)
+            # Делаем запрос
+            response = self.session.get(
+                url,
+                headers=self.headers,
+                proxies=proxies_dict,
+                timeout=15
+            )
 
-        self.last_request_time = time.time()
-        self.request_count += 1
+            if response.status_code == 429:
+                return [self.handle_blocking()]
 
-    def rotate_user_agent(self):
-            """Ротация User-Agent и других заголовков"""
-            self.headers['User-Agent'] = random.choice(self.user_agents)
+            if response.status_code != 200:
+                print(f"[AdvancedScraper] ❌ HTTP {response.status_code}")
+                return []
 
-            # ✅ Дополнительные заголовки для маскировки
-            self.headers.update({
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Language': random.choice([
-                    'ru-RU,ru;q=0.8,en-US;q=0.5,en;q=0.3',
-                    'ru-RU,ru;q=0.9,en;q=0.8',
-                    'ru,en-US;q=0.7,en;q=0.3'
-                ]),
-                'Accept-Encoding': 'gzip, deflate, br',
-                'DNT': '1',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Cache-Control': 'max-age=0',
-            })
+            # Парсим через BeautifulSoup
+            soup = BeautifulSoup(response.content, 'html.parser')
+            cards = soup.find_all('div', {'data-marker': 'item'})
 
-            print(f"[Scraper] 🔄 User-Agent: {self.headers['User-Agent'][:50]}...")
+            apartments = []
+            for card in cards[:5]:
+                try:
+                    apartment_data = self.parse_card_with_bs4(card)
+                    if apartment_data and self.meets_criteria(apartment_data):
+                        apartments.append(apartment_data)
+                except:
+                    continue
+
+            print(f"[AdvancedScraper] 📊 Fallback результат: {len(apartments)} квартир")
+            return apartments
+
+        except Exception as e:
+            print(f"[AdvancedScraper] ❌ Fallback ошибка: {e}")
+            return []
+
+    def parse_card_with_bs4(self, card):
+        """Парсинг карточки через BeautifulSoup"""
+        try:
+            title_elem = card.find('a', {'data-marker': 'item-title'})
+            title = title_elem.text.strip() if title_elem else "Без названия"
+
+            price_elem = card.find('span', {'data-marker': 'item-price'})
+            price = price_elem.text.strip() if price_elem else "Цена не указана"
+            price_num = self.extract_price_number(price)
+
+            address_elem = card.find('div', {'data-marker': 'item-address'})
+            location = address_elem.text.strip() if address_elem else "Адрес не указан"
+
+            url = title_elem.get('href', '') if title_elem else ''
+            if url and not url.startswith('http'):
+                url = self.base_url + url
+
+            description = card.get_text()
+            rooms, area = self.extract_apartment_params(title, description)
+            metro_info = self.extract_metro_info(description)
+
+            return {
+                'title': title,
+                'price': price,
+                'price_num': price_num,
+                'location': location,
+                'metro_info': metro_info,
+                'url': url,
+                'description': description,
+                'rooms': rooms,
+                'area': area,
+                'listing_age': "📅 Недавно"
+            }
+        except Exception as e:
+            print(f"[AdvancedScraper] ❌ BS4 парсинг: {e}")
+            return None

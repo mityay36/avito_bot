@@ -4,3 +4,6 @@ python-telegram-bot==20.7
 schedule==1.2.0
 python-dotenv==1.0.0
 lxml==4.9.3
+selenium==4.15.0
+undetected-chromedriver==3.5.4
+fake-useragent==1.4.0
